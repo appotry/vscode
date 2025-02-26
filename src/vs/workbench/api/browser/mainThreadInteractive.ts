@@ -3,10 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { DisposableStore } from 'vs/base/common/lifecycle';
-import { ExtHostContext, ExtHostInteractiveShape, IExtHostContext, MainContext, MainThreadInteractiveShape } from 'vs/workbench/api/common/extHost.protocol';
-import { extHostNamedCustomer } from 'vs/workbench/api/common/extHostCustomers';
-import { IInteractiveDocumentService } from 'vs/workbench/contrib/interactive/browser/interactiveDocumentService';
+import { DisposableStore } from '../../../base/common/lifecycle.js';
+import { PLAINTEXT_LANGUAGE_ID } from '../../../editor/common/languages/modesRegistry.js';
+import { ExtHostContext, ExtHostInteractiveShape, MainContext, MainThreadInteractiveShape } from '../common/extHost.protocol.js';
+import { extHostNamedCustomer, IExtHostContext } from '../../services/extensions/common/extHostCustomers.js';
+import { IInteractiveDocumentService } from '../../contrib/interactive/browser/interactiveDocumentService.js';
 
 @extHostNamedCustomer(MainContext.MainThreadInteractive)
 export class MainThreadInteractive implements MainThreadInteractiveShape {
@@ -21,7 +22,7 @@ export class MainThreadInteractive implements MainThreadInteractiveShape {
 		this._proxy = extHostContext.getProxy(ExtHostContext.ExtHostInteractive);
 
 		this._disposables.add(interactiveDocumentService.onWillAddInteractiveDocument((e) => {
-			this._proxy.$willAddInteractiveDocument(e.inputUri, '\n', 'plaintext', e.notebookUri);
+			this._proxy.$willAddInteractiveDocument(e.inputUri, '\n', PLAINTEXT_LANGUAGE_ID, e.notebookUri);
 		}));
 
 		this._disposables.add(interactiveDocumentService.onWillRemoveInteractiveDocument((e) => {

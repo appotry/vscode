@@ -3,12 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as DOM from 'vs/base/browser/dom';
-import { IMouseEvent } from 'vs/base/browser/mouseEvent';
-import { DisposableStore } from 'vs/base/common/lifecycle';
+import * as DOM from './dom.js';
+import { IKeyboardEvent } from './keyboardEvent.js';
+import { IMouseEvent } from './mouseEvent.js';
+import { DisposableStore } from '../common/lifecycle.js';
 
 export interface IContentActionHandler {
-	callback: (content: string, event?: IMouseEvent) => void;
+	readonly callback: (content: string, event: IMouseEvent | IKeyboardEvent) => void;
 	readonly disposables: DisposableStore;
 }
 
@@ -100,7 +101,6 @@ function _renderFormattedText(element: Node, treeNode: IFormatParseTree, actionH
 		child = document.createElement('code');
 	} else if (treeNode.type === FormatType.Action && actionHandler) {
 		const a = document.createElement('a');
-		a.href = '#';
 		actionHandler.disposables.add(DOM.addStandardDisposableListener(a, 'click', (event) => {
 			actionHandler.callback(String(treeNode.index), event);
 		}));
@@ -118,7 +118,7 @@ function _renderFormattedText(element: Node, treeNode: IFormatParseTree, actionH
 
 	if (child && Array.isArray(treeNode.children)) {
 		treeNode.children.forEach((nodeChild) => {
-			_renderFormattedText(child!, nodeChild, actionHandler, renderCodeSegments);
+			_renderFormattedText(child, nodeChild, actionHandler, renderCodeSegments);
 		});
 	}
 }

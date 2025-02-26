@@ -3,28 +3,33 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-'use strict';
-
-import * as es from 'event-stream';
-import * as fs from 'fs';
-import * as gulp from 'gulp';
-import * as path from 'path';
+import es from 'event-stream';
+import fs from 'fs';
+import gulp from 'gulp';
+import path from 'path';
 import * as monacodts from './monaco-api';
 import * as nls from './nls';
 import { createReporter } from './reporter';
 import * as util from './util';
-import * as fancyLog from 'fancy-log';
-import * as ansiColors from 'ansi-colors';
-import * as os from 'os';
+import fancyLog from 'fancy-log';
+import ansiColors from 'ansi-colors';
+import os from 'os';
+import File from 'vinyl';
+import * as task from './task';
+import { Mangler } from './mangle/index';
+import { RawSourceMap } from 'source-map';
+import { gulpPostcss } from './postcss';
 import ts = require('typescript');
-
 const watch = require('./watch');
+
+
+// --- gulp-tsb: compile and transpile --------------------------------
 
 const reporter = createReporter();
 
 function getTypeScriptCompilerOptions(src: string): ts.CompilerOptions {
 	const rootDir = path.join(__dirname, `../../${src}`);
-	let options: ts.CompilerOptions = {};
+	const options: ts.CompilerOptions = {};
 	options.verbose = false;
 	options.sourceMap = true;
 	if (process.env['VSCODE_NO_SOURCEMAP']) { // To be used by developers in a hurry
@@ -37,8 +42,15 @@ function getTypeScriptCompilerOptions(src: string): ts.CompilerOptions {
 	return options;
 }
 
-function createCompile(src: string, build: boolean, emitError?: boolean) {
-	const tsb = require('gulp-tsb') as typeof import('gulp-tsb');
+interface ICompileTaskOptions {
+	readonly build: boolean;
+	readonly emitError: boolean;
+	readonly transpileOnly: boolean | { esbuild: boolean };
+	readonly preserveEnglish: boolean;
+}
+
+function createCompile(src: string, { build, emitError, transpileOnly, preserveEnglish }: ICompileTaskOptions) {
+	const tsb = require('./tsb') as typeof import('./tsb');
 	const sourcemaps = require('gulp-sourcemaps') as typeof import('gulp-sourcemaps');
 
 
@@ -48,31 +60,39 @@ function createCompile(src: string, build: boolean, emitError?: boolean) {
 		overrideOptions.inlineSourceMap = true;
 	}
 
-	const compilation = tsb.create(projectPath, overrideOptions, false, err => reporter(err));
+	const compilation = tsb.create(projectPath, overrideOptions, {
+		verbose: false,
+		transpileOnly: Boolean(transpileOnly),
+		transpileWithSwc: typeof transpileOnly !== 'boolean' && transpileOnly.esbuild
+	}, err => reporter(err));
 
 	function pipeline(token?: util.ICancellationToken) {
 		const bom = require('gulp-bom') as typeof import('gulp-bom');
 
-		const utf8Filter = util.filter(data => /(\/|\\)test(\/|\\).*utf8/.test(data.path));
 		const tsFilter = util.filter(data => /\.ts$/.test(data.path));
+		const isUtf8Test = (f: File) => /(\/|\\)test(\/|\\).*utf8/.test(f.path);
+		const isRuntimeJs = (f: File) => f.path.endsWith('.js') && !f.path.includes('fixtures');
+		const isCSS = (f: File) => f.path.endsWith('.css') && !f.path.includes('fixtures');
 		const noDeclarationsFilter = util.filter(data => !(/\.d\.ts$/.test(data.path)));
+
+		const postcssNesting = require('postcss-nesting');
 
 		const input = es.through();
 		const output = input
-			.pipe(utf8Filter)
-			.pipe(bom()) // this is required to preserve BOM in test files that loose it otherwise
-			.pipe(utf8Filter.restore)
+			.pipe(util.$if(isUtf8Test, bom())) // this is required to preserve BOM in test files that loose it otherwise
+			.pipe(util.$if(!build && isRuntimeJs, util.appendOwnPathSourceURL()))
+			.pipe(util.$if(isCSS, gulpPostcss([postcssNesting()], err => reporter(String(err)))))
 			.pipe(tsFilter)
 			.pipe(util.loadSourcemaps())
 			.pipe(compilation(token))
 			.pipe(noDeclarationsFilter)
-			.pipe(build ? nls.nls() : es.through())
+			.pipe(util.$if(build, nls.nls({ preserveEnglish })))
 			.pipe(noDeclarationsFilter.restore)
-			.pipe(sourcemaps.write('.', {
+			.pipe(util.$if(!transpileOnly, sourcemaps.write('.', {
 				addComment: false,
 				includeContent: !!build,
 				sourceRoot: overrideOptions.sourceRoot
-			}))
+			})))
 			.pipe(tsFilter.restore)
 			.pipe(reporter.end(!!emitError));
 
@@ -81,40 +101,84 @@ function createCompile(src: string, build: boolean, emitError?: boolean) {
 	pipeline.tsProjectSrc = () => {
 		return compilation.src({ base: src });
 	};
+	pipeline.projectPath = projectPath;
 	return pipeline;
 }
 
-export function compileTask(src: string, out: string, build: boolean): () => NodeJS.ReadWriteStream {
+export function transpileTask(src: string, out: string, esbuild: boolean): task.StreamTask {
 
-	return function () {
+	const task = () => {
+
+		const transpile = createCompile(src, { build: false, emitError: true, transpileOnly: { esbuild }, preserveEnglish: false });
+		const srcPipe = gulp.src(`${src}/**`, { base: `${src}` });
+
+		return srcPipe
+			.pipe(transpile())
+			.pipe(gulp.dest(out));
+	};
+
+	task.taskName = `transpile-${path.basename(src)}`;
+	return task;
+}
+
+export function compileTask(src: string, out: string, build: boolean, options: { disableMangle?: boolean; preserveEnglish?: boolean } = {}): task.StreamTask {
+
+	const task = () => {
 
 		if (os.totalmem() < 4_000_000_000) {
 			throw new Error('compilation requires 4GB of RAM');
 		}
 
-		const compile = createCompile(src, build, true);
+		const compile = createCompile(src, { build, emitError: true, transpileOnly: false, preserveEnglish: !!options.preserveEnglish });
 		const srcPipe = gulp.src(`${src}/**`, { base: `${src}` });
-		let generator = new MonacoGenerator(false);
+		const generator = new MonacoGenerator(false);
 		if (src === 'src') {
 			generator.execute();
 		}
 
+		// mangle: TypeScript to TypeScript
+		let mangleStream = es.through();
+		if (build && !options.disableMangle) {
+			let ts2tsMangler = new Mangler(compile.projectPath, (...data) => fancyLog(ansiColors.blue('[mangler]'), ...data), { mangleExports: true, manglePrivateFields: true });
+			const newContentsByFileName = ts2tsMangler.computeNewFileContents(new Set(['saveState']));
+			mangleStream = es.through(async function write(data: File & { sourceMap?: RawSourceMap }) {
+				type TypeScriptExt = typeof ts & { normalizePath(path: string): string };
+				const tsNormalPath = (<TypeScriptExt>ts).normalizePath(data.path);
+				const newContents = (await newContentsByFileName).get(tsNormalPath);
+				if (newContents !== undefined) {
+					data.contents = Buffer.from(newContents.out);
+					data.sourceMap = newContents.sourceMap && JSON.parse(newContents.sourceMap);
+				}
+				this.push(data);
+			}, async function end() {
+				// free resources
+				(await newContentsByFileName).clear();
+
+				this.push(null);
+				(<any>ts2tsMangler) = undefined;
+			});
+		}
+
 		return srcPipe
+			.pipe(mangleStream)
 			.pipe(generator.stream)
 			.pipe(compile())
 			.pipe(gulp.dest(out));
 	};
+
+	task.taskName = `compile-${path.basename(src)}`;
+	return task;
 }
 
-export function watchTask(out: string, build: boolean): () => NodeJS.ReadWriteStream {
+export function watchTask(out: string, build: boolean, srcPath: string = 'src'): task.StreamTask {
 
-	return function () {
-		const compile = createCompile('src', build);
+	const task = () => {
+		const compile = createCompile(srcPath, { build, emitError: false, transpileOnly: false, preserveEnglish: false });
 
-		const src = gulp.src('src/**', { base: 'src' });
-		const watchSrc = watch('src/**', { base: 'src', readDelay: 200 });
+		const src = gulp.src(`${srcPath}/**`, { base: srcPath });
+		const watchSrc = watch(`${srcPath}/**`, { base: srcPath, readDelay: 200 });
 
-		let generator = new MonacoGenerator(true);
+		const generator = new MonacoGenerator(true);
 		generator.execute();
 
 		return watchSrc
@@ -122,6 +186,8 @@ export function watchTask(out: string, build: boolean): () => NodeJS.ReadWriteSt
 			.pipe(util.incremental(compile, src, true))
 			.pipe(gulp.dest(out));
 	};
+	task.taskName = `watch-${path.basename(out)}`;
+	return task;
 }
 
 const REPO_SRC_FOLDER = path.join(__dirname, '../../src');
@@ -130,7 +196,7 @@ class MonacoGenerator {
 	private readonly _isWatch: boolean;
 	public readonly stream: NodeJS.ReadWriteStream;
 
-	private readonly _watchedFiles: { [filePath: string]: boolean; };
+	private readonly _watchedFiles: { [filePath: string]: boolean };
 	private readonly _fsProvider: monacodts.FSProvider;
 	private readonly _declarationResolver: monacodts.DeclarationResolver;
 
@@ -138,7 +204,7 @@ class MonacoGenerator {
 		this._isWatch = isWatch;
 		this.stream = es.through();
 		this._watchedFiles = {};
-		let onWillReadFile = (moduleId: string, filePath: string) => {
+		const onWillReadFile = (moduleId: string, filePath: string) => {
 			if (!this._isWatch) {
 				return;
 			}
@@ -167,7 +233,7 @@ class MonacoGenerator {
 		}
 	}
 
-	private _executeSoonTimer: NodeJS.Timer | null = null;
+	private _executeSoonTimer: NodeJS.Timeout | null = null;
 	private _executeSoon(): void {
 		if (this._executeSoonTimer !== null) {
 			clearTimeout(this._executeSoonTimer);
@@ -180,7 +246,7 @@ class MonacoGenerator {
 	}
 
 	private _run(): monacodts.IMonacoDeclarationResult | null {
-		let r = monacodts.run3(this._declarationResolver);
+		const r = monacodts.run3(this._declarationResolver);
 		if (!r && !this._isWatch) {
 			// The build must always be able to generate the monaco.d.ts
 			throw new Error(`monaco.d.ts generation error - Cannot continue`);
@@ -212,26 +278,45 @@ class MonacoGenerator {
 	}
 }
 
-function apiProposalNamesGenerator() {
-	const stream = es.through();
+function generateApiProposalNames() {
+	let eol: string;
 
-	const pattern = /vscode\.proposed\.([a-zA-Z]+)\.d\.ts/;
-	const dtsFolder = path.join(REPO_SRC_FOLDER, 'vscode-dts');
+	try {
+		const src = fs.readFileSync('src/vs/platform/extensions/common/extensionsApiProposals.ts', 'utf-8');
+		const match = /\r?\n/m.exec(src);
+		eol = match ? match[0] : os.EOL;
+	} catch {
+		eol = os.EOL;
+	}
 
-	const generateFile = () => {
+	const pattern = /vscode\.proposed\.([a-zA-Z\d]+)\.d\.ts$/;
+	const versionPattern = /^\s*\/\/\s*version\s*:\s*(\d+)\s*$/mi;
+	const proposals = new Map<string, { proposal: string; version?: number }>();
 
-		try {
+	const input = es.through();
+	const output = input
+		.pipe(util.filter((f: File) => pattern.test(f.path)))
+		.pipe(es.through((f: File) => {
+			const name = path.basename(f.path);
+			const match = pattern.exec(name);
 
-			const t1 = Date.now();
-			const proposalNames: [name: string, url: string][] = [];
-			for (let file of fs.readdirSync(dtsFolder).sort()) {
-				const match = pattern.exec(file);
-				if (match) {
-					proposalNames.push([match[1], `https://raw.githubusercontent.com/microsoft/vscode/main/src/vscode-dts/${file}`]);
-				}
+			if (!match) {
+				return;
 			}
 
-			const source = [
+			const proposalName = match[1];
+
+			const contents = f.contents.toString('utf8');
+			const versionMatch = versionPattern.exec(contents);
+			const version = versionMatch ? versionMatch[1] : undefined;
+
+			proposals.set(proposalName, {
+				proposal: `https://raw.githubusercontent.com/microsoft/vscode/main/src/vscode-dts/vscode.proposed.${proposalName}.d.ts`,
+				version: version ? parseInt(version) : undefined
+			});
+		}, function () {
+			const names = [...proposals.keys()].sort();
+			const contents = [
 				'/*---------------------------------------------------------------------------------------------',
 				' *  Copyright (c) Microsoft Corporation. All rights reserved.',
 				' *  Licensed under the MIT License. See License.txt in the project root for license information.',
@@ -239,47 +324,42 @@ function apiProposalNamesGenerator() {
 				'',
 				'// THIS IS A GENERATED FILE. DO NOT EDIT DIRECTLY.',
 				'',
-				'export const allApiProposals = Object.freeze({',
-				`${proposalNames.map(t => `\t${t[0]}: '${t[1]}'`).join(',\n')}`,
-				'});',
-				'export type ApiProposalName = keyof typeof allApiProposals;',
+				'const _allApiProposals = {',
+				`${names.map(proposalName => {
+					const proposal = proposals.get(proposalName)!;
+					return `\t${proposalName}: {${eol}\t\tproposal: '${proposal.proposal}',${eol}${proposal.version ? `\t\tversion: ${proposal.version}${eol}` : ''}\t}`;
+				}).join(`,${eol}`)}`,
+				'};',
+				'export const allApiProposals = Object.freeze<{ [proposalName: string]: Readonly<{ proposal: string; version?: number }> }>(_allApiProposals);',
+				'export type ApiProposalName = keyof typeof _allApiProposals;',
 				'',
-			].join('\n');
+			].join(eol);
 
-			const outFile = path.join(dtsFolder, '../vs/workbench/services/extensions/common/extensionsApiProposals.ts');
+			this.emit('data', new File({
+				path: 'vs/platform/extensions/common/extensionsApiProposals.ts',
+				contents: Buffer.from(contents)
+			}));
+			this.emit('end');
+		}));
 
-			if (fs.readFileSync(outFile).toString() !== source) {
-				fs.writeFileSync(outFile, source);
-				console.log(`Generated 'extensionsApiProposals.ts' in ${Date.now() - t1}ms`);
-			}
-
-		} catch (err) {
-			stream.emit('error', err);
-		}
-	};
-
-	let handle: NodeJS.Timeout;
-	stream.on('data', () => {
-		clearTimeout(handle);
-		handle = setTimeout(generateFile, 250);
-	});
-
-	return stream;
+	return es.duplex(input, output);
 }
 
-export function compileApiProposalNames(): () => NodeJS.ReadWriteStream {
-	return function () {
-		const srcPipe = gulp.src('src/vscode-dts/**', { base: 'src' });
-		const proposals = apiProposalNamesGenerator();
-		return srcPipe.pipe(proposals);
-	};
-}
+const apiProposalNamesReporter = createReporter('api-proposal-names');
 
-export function watchApiProposalNames(): () => NodeJS.ReadWriteStream {
-	return function () {
-		const watchSrc = watch('src/vscode-dts/**', { base: 'src', readDelay: 200 });
-		const proposals = apiProposalNamesGenerator();
-		proposals.write(undefined); // send something to trigger initial generate
-		return watchSrc.pipe(proposals);
-	};
-}
+export const compileApiProposalNamesTask = task.define('compile-api-proposal-names', () => {
+	return gulp.src('src/vscode-dts/**')
+		.pipe(generateApiProposalNames())
+		.pipe(gulp.dest('src'))
+		.pipe(apiProposalNamesReporter.end(true));
+});
+
+export const watchApiProposalNamesTask = task.define('watch-api-proposal-names', () => {
+	const task = () => gulp.src('src/vscode-dts/**')
+		.pipe(generateApiProposalNames())
+		.pipe(apiProposalNamesReporter.end(true));
+
+	return watch('src/vscode-dts/**', { readDelay: 200 })
+		.pipe(util.debounce(task))
+		.pipe(gulp.dest('src'));
+});

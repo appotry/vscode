@@ -3,10 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter, Event } from 'vs/base/common/event';
-import { Disposable, markAsSingleton } from 'vs/base/common/lifecycle';
-import { RGBA8 } from 'vs/editor/common/core/rgba';
-import { ColorId, TokenizationRegistry } from 'vs/editor/common/modes';
+import { Emitter, Event } from '../../../base/common/event.js';
+import { Disposable, markAsSingleton } from '../../../base/common/lifecycle.js';
+import { RGBA8 } from '../core/rgba.js';
+import { TokenizationRegistry } from '../languages.js';
+import { ColorId } from '../encodedTokenAttributes.js';
 
 export class MinimapTokensColorTracker extends Disposable {
 	private static _INSTANCE: MinimapTokensColorTracker | null = null;
@@ -46,7 +47,7 @@ export class MinimapTokensColorTracker extends Disposable {
 			// Use a VM friendly data-type
 			this._colors[colorId] = new RGBA8(source.r, source.g, source.b, Math.round(source.a * 255));
 		}
-		let backgroundLuminosity = colorMap[ColorId.DefaultBackground].getRelativeLuminance();
+		const backgroundLuminosity = colorMap[ColorId.DefaultBackground].getRelativeLuminance();
 		this._backgroundIsLight = backgroundLuminosity >= 0.5;
 		this._onDidChange.fire(undefined);
 	}
