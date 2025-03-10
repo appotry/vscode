@@ -3,10 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter } from 'vs/base/common/event';
-import { TernarySearchTree } from 'vs/base/common/map';
-import { URI } from 'vs/base/common/uri';
-import { getConfigurationKeys, getConfigurationValue, IConfigurationChangeEvent, IConfigurationOverrides, IConfigurationService, IConfigurationValue, isConfigurationOverrides } from 'vs/platform/configuration/common/configuration';
+import { Emitter } from '../../../../base/common/event.js';
+import { TernarySearchTree } from '../../../../base/common/ternarySearchTree.js';
+import { URI } from '../../../../base/common/uri.js';
+import { getConfigurationValue, IConfigurationChangeEvent, IConfigurationOverrides, IConfigurationService, IConfigurationValue, isConfigurationOverrides } from '../../common/configuration.js';
+import { Extensions, IConfigurationRegistry } from '../../common/configurationRegistry.js';
+import { Registry } from '../../../registry/common/platform.js';
 
 export class TestConfigurationService implements IConfigurationService {
 	public _serviceBrand: undefined;
@@ -56,19 +58,25 @@ export class TestConfigurationService implements IConfigurationService {
 		return Promise.resolve(undefined);
 	}
 
+	private overrideIdentifiers: Map<string, string[]> = new Map();
+	public setOverrideIdentifiers(key: string, identifiers: string[]): void {
+		this.overrideIdentifiers.set(key, identifiers);
+	}
+
 	public inspect<T>(key: string, overrides?: IConfigurationOverrides): IConfigurationValue<T> {
-		const config = this.getValue(undefined, overrides);
+		const value = this.getValue(key, overrides);
 
 		return {
-			value: getConfigurationValue<T>(config, key),
-			defaultValue: getConfigurationValue<T>(config, key),
-			userValue: getConfigurationValue<T>(config, key)
+			value,
+			defaultValue: undefined,
+			userValue: value,
+			overrideIdentifiers: this.overrideIdentifiers.get(key)
 		};
 	}
 
 	public keys() {
 		return {
-			default: getConfigurationKeys(),
+			default: Object.keys(Registry.as<IConfigurationRegistry>(Extensions.Configuration).getConfigurationProperties()),
 			user: Object.keys(this.configuration),
 			workspace: [],
 			workspaceFolder: []

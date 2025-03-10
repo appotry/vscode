@@ -3,9 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { RGBA8 } from 'vs/editor/common/core/rgba';
-import { Constants, getCharIndex } from './minimapCharSheet';
-import { toUint8 } from 'vs/base/common/uint';
+import { RGBA8 } from '../../../common/core/rgba.js';
+import { Constants, getCharIndex } from './minimapCharSheet.js';
+import { toUint8 } from '../../../../base/common/uint.js';
 
 export class MinimapCharRenderer {
 	_minimapCharRendererBrand: void = undefined;
@@ -19,7 +19,7 @@ export class MinimapCharRenderer {
 	}
 
 	private static soften(input: Uint8ClampedArray, ratio: number): Uint8ClampedArray {
-		let result = new Uint8ClampedArray(input.length);
+		const result = new Uint8ClampedArray(input.length);
 		for (let i = 0, len = input.length; i < len; i++) {
 			result[i] = toUint8(input[i] * ratio);
 		}

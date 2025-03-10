@@ -9,18 +9,18 @@ import {
 	Range,
 	Selection, Task,
 	TaskGroup, tasks, TextDocument, TextDocumentShowOptions, ThemeIcon, TreeDataProvider, TreeItem, TreeItemLabel, TreeItemCollapsibleState, Uri,
-	window, workspace, WorkspaceFolder, Position, Location
+	window, workspace, WorkspaceFolder, Position, Location, l10n
 } from 'vscode';
-import * as nls from 'vscode-nls';
 import { readScripts } from './readScripts';
 import {
-	createTask, getPackageManager, getTaskName, isAutoDetectionEnabled, isWorkspaceFolder, NpmTaskDefinition,
+	createInstallationTask, getTaskName, isAutoDetectionEnabled, isWorkspaceFolder, INpmTaskDefinition,
 	NpmTaskProvider,
 	startDebugging,
-	TaskWithLocation
+	detectPackageManager,
+	ITaskWithLocation,
+	INSTALL_SCRIPT
 } from './tasks';
 
-const localize = nls.loadMessageBundle();
 
 class Folder extends TreeItem {
 	packages: PackageJSON[] = [];
@@ -78,13 +78,13 @@ class NpmScript extends TreeItem {
 	package: PackageJSON;
 	taskLocation?: Location;
 
-	constructor(_context: ExtensionContext, packageJson: PackageJSON, task: TaskWithLocation) {
+	constructor(_context: ExtensionContext, packageJson: PackageJSON, task: ITaskWithLocation) {
 		const name = packageJson.path.length > 0
 			? task.task.name.substring(0, task.task.name.length - packageJson.path.length - 2)
 			: task.task.name;
 		super(name, TreeItemCollapsibleState.None);
 		this.taskLocation = task.location;
-		const command: ExplorerCommands = workspace.getConfiguration('npm').get<ExplorerCommands>('scriptExplorerAction') || 'open';
+		const command: ExplorerCommands = name === `${INSTALL_SCRIPT} ` ? 'run' : workspace.getConfiguration('npm').get<ExplorerCommands>('scriptExplorerAction') || 'open';
 
 		const commandList = {
 			'open': {
@@ -92,9 +92,11 @@ class NpmScript extends TreeItem {
 				command: 'vscode.open',
 				arguments: [
 					this.taskLocation?.uri,
-					this.taskLocation ? <TextDocumentShowOptions>{
-						selection: new Range(this.taskLocation.range.start, this.taskLocation.range.start)
-					} : undefined
+					this.taskLocation ?
+						{
+							selection: new Range(this.taskLocation.range.start, this.taskLocation.range.start)
+						} satisfies TextDocumentShowOptions
+						: undefined
 				]
 			},
 			'run': {
@@ -149,8 +151,8 @@ export class NpmScriptsTreeDataProvider implements TreeDataProvider<TreeItem> {
 	}
 
 	private async runScript(script: NpmScript) {
-		// Call getPackageManager to trigger the multiple lock files warning.
-		await getPackageManager(this.context, script.getFolder().uri);
+		// Call detectPackageManager to trigger the multiple lock files warning.
+		await detectPackageManager(script.getFolder().uri, this.context, true);
 		tasks.executeTask(script.task);
 	}
 
@@ -180,7 +182,7 @@ export class NpmScriptsTreeDataProvider implements TreeDataProvider<TreeItem> {
 		if (!uri) {
 			return;
 		}
-		let task = await createTask(await getPackageManager(this.context, selection.folder.workspaceFolder.uri, true), 'install', ['install'], selection.folder.workspaceFolder, uri, undefined, []);
+		const task = await createInstallationTask(this.context, selection.folder.workspaceFolder, uri);
 		tasks.executeTask(task);
 	}
 
@@ -194,8 +196,8 @@ export class NpmScriptsTreeDataProvider implements TreeDataProvider<TreeItem> {
 		if (!uri) {
 			return;
 		}
-		let document: TextDocument = await workspace.openTextDocument(uri);
-		let position = this.findScriptPosition(document, selection instanceof NpmScript ? selection : undefined) || new Position(0, 0);
+		const document: TextDocument = await workspace.openTextDocument(uri);
+		const position = this.findScriptPosition(document, selection instanceof NpmScript ? selection : undefined) || new Position(0, 0);
 		await window.showTextDocument(document, { preserveFocus: true, selection: new Selection(position, position) });
 	}
 
@@ -231,9 +233,9 @@ export class NpmScriptsTreeDataProvider implements TreeDataProvider<TreeItem> {
 				const taskTree = this.buildTaskTree(taskItems);
 				this.taskTree = this.sortTaskTree(taskTree);
 				if (this.taskTree.length === 0) {
-					let message = localize('noScripts', 'No scripts found.');
+					let message = l10n.t("No scripts found.");
 					if (!isAutoDetectionEnabled()) {
-						message = localize('autoDetectIsOff', 'The setting "npm.autoDetect" is "off".');
+						message = l10n.t('The setting "npm.autoDetect" is "off".');
 					}
 					this.taskTree = [new NoScripts(message)];
 				}
@@ -260,7 +262,7 @@ export class NpmScriptsTreeDataProvider implements TreeDataProvider<TreeItem> {
 	}
 
 	private isInstallTask(task: Task): boolean {
-		let fullName = getTaskName('install', task.definition.path);
+		const fullName = getTaskName('install', task.definition.path);
 		return fullName === task.name;
 	}
 
@@ -284,18 +286,24 @@ export class NpmScriptsTreeDataProvider implements TreeDataProvider<TreeItem> {
 		});
 	}
 
-	private buildTaskTree(tasks: TaskWithLocation[]): TaskTree {
-		let folders: Map<String, Folder> = new Map();
-		let packages: Map<String, PackageJSON> = new Map();
+	private buildTaskTree(tasks: ITaskWithLocation[]): TaskTree {
+		const folders: Map<String, Folder> = new Map();
+		const packages: Map<String, PackageJSON> = new Map();
 
 		let folder = null;
 		let packageJson = null;
 
-		const regularExpressionsSetting = workspace.getConfiguration('npm').get<string[]>('scriptExplorerExclude', []);
-		const regularExpressions = regularExpressionsSetting?.map(value => RegExp(value));
+		const excludeConfig: Map<string, RegExp[]> = new Map();
 
 		tasks.forEach(each => {
-			if (regularExpressions.some((regularExpression) => (<NpmTaskDefinition>each.task.definition).script.match(regularExpression))) {
+			const location = each.location;
+			if (location && !excludeConfig.has(location.uri.toString())) {
+				const regularExpressionsSetting = workspace.getConfiguration('npm', location.uri).get<string[]>('scriptExplorerExclude', []);
+				excludeConfig.set(location.uri.toString(), regularExpressionsSetting?.map(value => RegExp(value)));
+			}
+			const regularExpressions = (location && excludeConfig.has(location.uri.toString())) ? excludeConfig.get(location.uri.toString()) : undefined;
+
+			if (regularExpressions && regularExpressions.some((regularExpression) => (<INpmTaskDefinition>each.task.definition).script.match(regularExpression))) {
 				return;
 			}
 
@@ -305,16 +313,16 @@ export class NpmScriptsTreeDataProvider implements TreeDataProvider<TreeItem> {
 					folder = new Folder(each.task.scope);
 					folders.set(each.task.scope.name, folder);
 				}
-				let definition: NpmTaskDefinition = <NpmTaskDefinition>each.task.definition;
-				let relativePath = definition.path ? definition.path : '';
-				let fullPath = path.join(each.task.scope.name, relativePath);
+				const definition: INpmTaskDefinition = <INpmTaskDefinition>each.task.definition;
+				const relativePath = definition.path ? definition.path : '';
+				const fullPath = path.join(each.task.scope.name, relativePath);
 				packageJson = packages.get(fullPath);
 				if (!packageJson) {
 					packageJson = new PackageJSON(folder, relativePath);
 					folder.addPackage(packageJson);
 					packages.set(fullPath, packageJson);
 				}
-				let script = new NpmScript(this.extensionContext, packageJson, each);
+				const script = new NpmScript(this.extensionContext, packageJson, each);
 				packageJson.addScript(script);
 			}
 		});
