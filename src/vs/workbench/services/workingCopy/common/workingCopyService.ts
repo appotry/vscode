@@ -3,15 +3,24 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { registerSingleton } from 'vs/platform/instantiation/common/extensions';
-import { Event, Emitter } from 'vs/base/common/event';
-import { URI } from 'vs/base/common/uri';
-import { Disposable, IDisposable, toDisposable, DisposableStore, dispose } from 'vs/base/common/lifecycle';
-import { ResourceMap } from 'vs/base/common/map';
-import { IWorkingCopy, IWorkingCopyIdentifier } from 'vs/workbench/services/workingCopy/common/workingCopy';
+import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { Event, Emitter } from '../../../../base/common/event.js';
+import { URI } from '../../../../base/common/uri.js';
+import { Disposable, IDisposable, toDisposable, DisposableStore, DisposableMap } from '../../../../base/common/lifecycle.js';
+import { ResourceMap } from '../../../../base/common/map.js';
+import { IWorkingCopy, IWorkingCopyIdentifier, IWorkingCopySaveEvent as IBaseWorkingCopySaveEvent } from './workingCopy.js';
+import { onUnexpectedError } from '../../../../base/common/errors.js';
 
 export const IWorkingCopyService = createDecorator<IWorkingCopyService>('workingCopyService');
+
+export interface IWorkingCopySaveEvent extends IBaseWorkingCopySaveEvent {
+
+	/**
+	 * The working copy that was saved.
+	 */
+	readonly workingCopy: IWorkingCopy;
+}
 
 export interface IWorkingCopyService {
 
@@ -40,6 +49,11 @@ export interface IWorkingCopyService {
 	 */
 	readonly onDidChangeContent: Event<IWorkingCopy>;
 
+	/**
+	 * An event for when a working copy was saved.
+	 */
+	readonly onDidSave: Event<IWorkingCopySaveEvent>;
+
 	//#endregion
 
 
@@ -54,6 +68,18 @@ export interface IWorkingCopyService {
 	 * All dirty working copies that are registered.
 	 */
 	readonly dirtyWorkingCopies: readonly IWorkingCopy[];
+
+	/**
+	 * The number of modified working copies that are registered,
+	 * including scratchpads, which are never dirty.
+	 */
+	readonly modifiedCount: number;
+
+	/**
+	 * All working copies with unsaved changes,
+	 * including scratchpads, which are never dirty.
+	 */
+	readonly modifiedWorkingCopies: readonly IWorkingCopy[];
 
 	/**
 	 * Whether there is any registered working copy that is dirty.
@@ -103,7 +129,23 @@ export interface IWorkingCopyService {
 	 */
 	get(identifier: IWorkingCopyIdentifier): IWorkingCopy | undefined;
 
+	/**
+	 * Returns all working copies with the given resource or `undefined`
+	 * if no such working copy exists.
+	 */
+	getAll(resource: URI): readonly IWorkingCopy[] | undefined;
+
 	//#endregion
+}
+
+class WorkingCopyLeakError extends Error {
+
+	constructor(message: string, stack: string) {
+		super(message);
+
+		this.name = 'WorkingCopyLeakError';
+		this.stack = stack;
+	}
 }
 
 export class WorkingCopyService extends Disposable implements IWorkingCopyService {
@@ -124,6 +166,9 @@ export class WorkingCopyService extends Disposable implements IWorkingCopyServic
 	private readonly _onDidChangeContent = this._register(new Emitter<IWorkingCopy>());
 	readonly onDidChangeContent = this._onDidChangeContent.event;
 
+	private readonly _onDidSave = this._register(new Emitter<IWorkingCopySaveEvent>());
+	readonly onDidSave = this._onDidSave.event;
+
 	//#endregion
 
 
@@ -133,11 +178,12 @@ export class WorkingCopyService extends Disposable implements IWorkingCopyServic
 	private _workingCopies = new Set<IWorkingCopy>();
 
 	private readonly mapResourceToWorkingCopies = new ResourceMap<Map<string, IWorkingCopy>>();
+	private readonly mapWorkingCopyToListeners = this._register(new DisposableMap<IWorkingCopy>());
 
 	registerWorkingCopy(workingCopy: IWorkingCopy): IDisposable {
 		let workingCopiesForResource = this.mapResourceToWorkingCopies.get(workingCopy.resource);
 		if (workingCopiesForResource?.has(workingCopy.typeId)) {
-			throw new Error(`Cannot register more than one working copy with the same resource ${workingCopy.resource.toString(true)} and type ${workingCopy.typeId}.`);
+			throw new Error(`Cannot register more than one working copy with the same resource ${workingCopy.resource.toString()} and type ${workingCopy.typeId}.`);
 		}
 
 		// Registry (all)
@@ -154,6 +200,8 @@ export class WorkingCopyService extends Disposable implements IWorkingCopyServic
 		const disposables = new DisposableStore();
 		disposables.add(workingCopy.onDidChangeContent(() => this._onDidChangeContent.fire(workingCopy)));
 		disposables.add(workingCopy.onDidChangeDirty(() => this._onDidChangeDirty.fire(workingCopy)));
+		disposables.add(workingCopy.onDidSave(e => this._onDidSave.fire({ workingCopy, ...e })));
+		this.mapWorkingCopyToListeners.set(workingCopy, disposables);
 
 		// Send some initial events
 		this._onDidRegister.fire(workingCopy);
@@ -161,16 +209,25 @@ export class WorkingCopyService extends Disposable implements IWorkingCopyServic
 			this._onDidChangeDirty.fire(workingCopy);
 		}
 
+		// Track Leaks
+		const leakId = this.trackLeaks(workingCopy);
+
 		return toDisposable(() => {
+
+			// Untrack Leaks
+			if (leakId) {
+				this.untrackLeaks(leakId);
+			}
+
+			// Unregister working copy
 			this.unregisterWorkingCopy(workingCopy);
-			dispose(disposables);
 
 			// Signal as event
 			this._onDidUnregister.fire(workingCopy);
 		});
 	}
 
-	private unregisterWorkingCopy(workingCopy: IWorkingCopy): void {
+	protected unregisterWorkingCopy(workingCopy: IWorkingCopy): void {
 
 		// Registry (all)
 		this._workingCopies.delete(workingCopy);
@@ -186,6 +243,9 @@ export class WorkingCopyService extends Disposable implements IWorkingCopyServic
 		if (workingCopy.isDirty()) {
 			this._onDidChangeDirty.fire(workingCopy);
 		}
+
+		// Remove all listeners associated to working copy
+		this.mapWorkingCopyToListeners.deleteAndDispose(workingCopy);
 	}
 
 	has(identifier: IWorkingCopyIdentifier): boolean;
@@ -202,8 +262,58 @@ export class WorkingCopyService extends Disposable implements IWorkingCopyServic
 		return this.mapResourceToWorkingCopies.get(identifier.resource)?.get(identifier.typeId);
 	}
 
+	getAll(resource: URI): readonly IWorkingCopy[] | undefined {
+		const workingCopies = this.mapResourceToWorkingCopies.get(resource);
+		if (!workingCopies) {
+			return undefined;
+		}
+
+		return Array.from(workingCopies.values());
+	}
+
 	//#endregion
 
+	//#region Leak Monitoring
+
+	private static readonly LEAK_TRACKING_THRESHOLD = 256;
+	private static readonly LEAK_REPORTING_THRESHOLD = 2 * WorkingCopyService.LEAK_TRACKING_THRESHOLD;
+	private static LEAK_REPORTED = false;
+
+	private readonly mapLeakToCounter = new Map<string, number>();
+
+	private trackLeaks(workingCopy: IWorkingCopy): string | undefined {
+		if (WorkingCopyService.LEAK_REPORTED || this._workingCopies.size < WorkingCopyService.LEAK_TRACKING_THRESHOLD) {
+			return undefined;
+		}
+
+		const leakId = `${workingCopy.resource.scheme}#${workingCopy.typeId || '<no typeId>'}\n${new Error().stack?.split('\n').slice(2).join('\n') ?? ''}`;
+		const leakCounter = (this.mapLeakToCounter.get(leakId) ?? 0) + 1;
+		this.mapLeakToCounter.set(leakId, leakCounter);
+
+		if (this._workingCopies.size > WorkingCopyService.LEAK_REPORTING_THRESHOLD) {
+			WorkingCopyService.LEAK_REPORTED = true;
+
+			const [topLeak, topCount] = Array.from(this.mapLeakToCounter.entries()).reduce(
+				([topLeak, topCount], [key, val]) => val > topCount ? [key, val] : [topLeak, topCount]
+			);
+
+			const message = `Potential working copy LEAK detected, having ${this._workingCopies.size} working copies already. Most frequent owner (${topCount})`;
+			onUnexpectedError(new WorkingCopyLeakError(message, topLeak));
+		}
+
+		return leakId;
+	}
+
+	private untrackLeaks(leakId: string): void {
+		const stackCounter = (this.mapLeakToCounter.get(leakId) ?? 1) - 1;
+		this.mapLeakToCounter.set(leakId, stackCounter);
+
+		if (stackCounter === 0) {
+			this.mapLeakToCounter.delete(leakId);
+		}
+	}
+
+	//#endregion
 
 	//#region Dirty Tracking
 
@@ -233,6 +343,22 @@ export class WorkingCopyService extends Disposable implements IWorkingCopyServic
 		return this.workingCopies.filter(workingCopy => workingCopy.isDirty());
 	}
 
+	get modifiedCount(): number {
+		let totalModifiedCount = 0;
+
+		for (const workingCopy of this._workingCopies) {
+			if (workingCopy.isModified()) {
+				totalModifiedCount++;
+			}
+		}
+
+		return totalModifiedCount;
+	}
+
+	get modifiedWorkingCopies(): IWorkingCopy[] {
+		return this.workingCopies.filter(workingCopy => workingCopy.isModified());
+	}
+
 	isDirty(resource: URI, typeId?: string): boolean {
 		const workingCopies = this.mapResourceToWorkingCopies.get(resource);
 		if (workingCopies) {
@@ -258,4 +384,4 @@ export class WorkingCopyService extends Disposable implements IWorkingCopyServic
 	//#endregion
 }
 
-registerSingleton(IWorkingCopyService, WorkingCopyService, true);
+registerSingleton(IWorkingCopyService, WorkingCopyService, InstantiationType.Delayed);
