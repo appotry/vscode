@@ -4,19 +4,22 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type * as vscode from 'vscode';
-import { MainContext, IMainContext, ExtHostUrlsShape, MainThreadUrlsShape } from './extHost.protocol';
-import { URI, UriComponents } from 'vs/base/common/uri';
-import { toDisposable } from 'vs/base/common/lifecycle';
-import { onUnexpectedError } from 'vs/base/common/errors';
-import { ExtensionIdentifier } from 'vs/platform/extensions/common/extensions';
+import { MainContext, IMainContext, ExtHostUrlsShape, MainThreadUrlsShape } from './extHost.protocol.js';
+import { URI, UriComponents } from '../../../base/common/uri.js';
+import { toDisposable } from '../../../base/common/lifecycle.js';
+import { onUnexpectedError } from '../../../base/common/errors.js';
+import { ExtensionIdentifierSet, IExtensionDescription } from '../../../platform/extensions/common/extensions.js';
+import { isURLDomainTrusted } from '../../contrib/url/common/trustedDomains.js';
 
 export class ExtHostUrls implements ExtHostUrlsShape {
 
 	private static HandlePool = 0;
 	private readonly _proxy: MainThreadUrlsShape;
 
-	private handles = new Set<string>();
+	private handles = new ExtensionIdentifierSet();
 	private handlers = new Map<number, vscode.UriHandler>();
+
+	private _trustedDomains: string[] = [];
 
 	constructor(
 		mainContext: IMainContext
@@ -24,18 +27,19 @@ export class ExtHostUrls implements ExtHostUrlsShape {
 		this._proxy = mainContext.getProxy(MainContext.MainThreadUrls);
 	}
 
-	registerUriHandler(extensionId: ExtensionIdentifier, handler: vscode.UriHandler): vscode.Disposable {
-		if (this.handles.has(ExtensionIdentifier.toKey(extensionId))) {
+	registerUriHandler(extension: IExtensionDescription, handler: vscode.UriHandler): vscode.Disposable {
+		const extensionId = extension.identifier;
+		if (this.handles.has(extensionId)) {
 			throw new Error(`Protocol handler already registered for extension ${extensionId}`);
 		}
 
 		const handle = ExtHostUrls.HandlePool++;
-		this.handles.add(ExtensionIdentifier.toKey(extensionId));
+		this.handles.add(extensionId);
 		this.handlers.set(handle, handler);
-		this._proxy.$registerUriHandler(handle, extensionId);
+		this._proxy.$registerUriHandler(handle, extensionId, extension.displayName || extension.name);
 
 		return toDisposable(() => {
-			this.handles.delete(ExtensionIdentifier.toKey(extensionId));
+			this.handles.delete(extensionId);
 			this.handlers.delete(handle);
 			this._proxy.$unregisterUriHandler(handle);
 		});
@@ -58,5 +62,17 @@ export class ExtHostUrls implements ExtHostUrlsShape {
 
 	async createAppUri(uri: URI): Promise<vscode.Uri> {
 		return URI.revive(await this._proxy.$createAppUri(uri));
+	}
+
+	async $updateTrustedDomains(trustedDomains: string[]): Promise<void> {
+		this._trustedDomains = trustedDomains;
+	}
+
+	isTrustedExternalUris(uris: URI[]): boolean[] {
+		return uris.map(uri => isURLDomainTrusted(uri, this._trustedDomains));
+	}
+
+	extractExternalUris(uris: URI[]): Promise<string[]> {
+		return this._proxy.$extractExternalUris(uris);
 	}
 }

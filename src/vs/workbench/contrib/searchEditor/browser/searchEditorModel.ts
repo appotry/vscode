@@ -3,21 +3,21 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { URI } from 'vs/base/common/uri';
-import { ITextModel } from 'vs/editor/common/model';
-import { IModelService } from 'vs/editor/common/services/modelService';
-import { IModeService } from 'vs/editor/common/services/modeService';
-import { IInstantiationService, ServicesAccessor } from 'vs/platform/instantiation/common/instantiation';
-import { parseSavedSearchEditor, parseSerializedSearchEditor } from 'vs/workbench/contrib/searchEditor/browser/searchEditorSerialization';
-import { IWorkingCopyBackupService } from 'vs/workbench/services/workingCopy/common/workingCopyBackup';
-import { SearchConfiguration } from './searchEditorInput';
-import { assertIsDefined } from 'vs/base/common/types';
-import { createTextBufferFactoryFromStream } from 'vs/editor/common/model/textModel';
-import { SearchEditorWorkingCopyTypeId } from 'vs/workbench/contrib/searchEditor/browser/constants';
-import { Emitter } from 'vs/base/common/event';
-import { ResourceMap } from 'vs/base/common/map';
+import { URI } from '../../../../base/common/uri.js';
+import { ITextModel } from '../../../../editor/common/model.js';
+import { IModelService } from '../../../../editor/common/services/model.js';
+import { ILanguageService } from '../../../../editor/common/languages/language.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { parseSavedSearchEditor, parseSerializedSearchEditor } from './searchEditorSerialization.js';
+import { IWorkingCopyBackupService } from '../../../services/workingCopy/common/workingCopyBackup.js';
+import { SearchConfiguration, SearchEditorWorkingCopyTypeId } from './constants.js';
+import { assertIsDefined } from '../../../../base/common/types.js';
+import { createTextBufferFactoryFromStream } from '../../../../editor/common/model/textModel.js';
+import { Emitter } from '../../../../base/common/event.js';
+import { ResourceMap } from '../../../../base/common/map.js';
+import { SEARCH_RESULT_LANGUAGE_ID } from '../../../services/search/common/search.js';
 
-export type SearchEditorData = { resultsModel: ITextModel, configurationModel: SearchConfigurationModel };
+export type SearchEditorData = { resultsModel: ITextModel; configurationModel: SearchConfigurationModel };
 
 export class SearchConfigurationModel {
 	private _onConfigDidUpdate = new Emitter<SearchConfiguration>();
@@ -30,9 +30,7 @@ export class SearchConfigurationModel {
 export class SearchEditorModel {
 	constructor(
 		private resource: URI,
-		@IWorkingCopyBackupService readonly workingCopyBackupService: IWorkingCopyBackupService,
-	) {
-	}
+	) { }
 
 	async resolve(): Promise<SearchEditorData> {
 		return assertIsDefined(searchEditorModelFactory.models.get(this.resource)).resolve();
@@ -49,7 +47,7 @@ class SearchEditorModelFactory {
 			throw Error('Unable to contruct model for resource that already exists');
 		}
 
-		const modeService = accessor.get(IModeService);
+		const languageService = accessor.get(ILanguageService);
 		const modelService = accessor.get(IModelService);
 		const instantiationService = accessor.get(IInstantiationService);
 		const workingCopyBackupService = accessor.get(IWorkingCopyBackupService);
@@ -61,13 +59,13 @@ class SearchEditorModelFactory {
 				if (!ongoingResolve) {
 					ongoingResolve = (async () => {
 
-						const backup = await this.tryFetchModelFromBackupService(resource, modeService, modelService, workingCopyBackupService, instantiationService);
+						const backup = await this.tryFetchModelFromBackupService(resource, languageService, modelService, workingCopyBackupService, instantiationService);
 						if (backup) {
 							return backup;
 						}
 
 						return Promise.resolve({
-							resultsModel: modelService.getModel(resource) ?? modelService.createModel('', modeService.create('search-result'), resource),
+							resultsModel: modelService.getModel(resource) ?? modelService.createModel('', languageService.createById(SEARCH_RESULT_LANGUAGE_ID), resource),
 							configurationModel: new SearchConfigurationModel(config)
 						});
 					})();
@@ -82,7 +80,7 @@ class SearchEditorModelFactory {
 			throw Error('Unable to contruct model for resource that already exists');
 		}
 
-		const modeService = accessor.get(IModeService);
+		const languageService = accessor.get(ILanguageService);
 		const modelService = accessor.get(IModelService);
 		const instantiationService = accessor.get(IInstantiationService);
 		const workingCopyBackupService = accessor.get(IWorkingCopyBackupService);
@@ -94,13 +92,13 @@ class SearchEditorModelFactory {
 				if (!ongoingResolve) {
 					ongoingResolve = (async () => {
 
-						const backup = await this.tryFetchModelFromBackupService(resource, modeService, modelService, workingCopyBackupService, instantiationService);
+						const backup = await this.tryFetchModelFromBackupService(resource, languageService, modelService, workingCopyBackupService, instantiationService);
 						if (backup) {
 							return backup;
 						}
 
 						return Promise.resolve({
-							resultsModel: modelService.createModel(contents ?? '', modeService.create('search-result'), resource),
+							resultsModel: modelService.createModel(contents ?? '', languageService.createById(SEARCH_RESULT_LANGUAGE_ID), resource),
 							configurationModel: new SearchConfigurationModel(config)
 						});
 					})();
@@ -115,7 +113,7 @@ class SearchEditorModelFactory {
 			throw Error('Unable to contruct model for resource that already exists');
 		}
 
-		const modeService = accessor.get(IModeService);
+		const languageService = accessor.get(ILanguageService);
 		const modelService = accessor.get(IModelService);
 		const instantiationService = accessor.get(IInstantiationService);
 		const workingCopyBackupService = accessor.get(IWorkingCopyBackupService);
@@ -127,14 +125,14 @@ class SearchEditorModelFactory {
 				if (!ongoingResolve) {
 					ongoingResolve = (async () => {
 
-						const backup = await this.tryFetchModelFromBackupService(resource, modeService, modelService, workingCopyBackupService, instantiationService);
+						const backup = await this.tryFetchModelFromBackupService(resource, languageService, modelService, workingCopyBackupService, instantiationService);
 						if (backup) {
 							return backup;
 						}
 
 						const { text, config } = await instantiationService.invokeFunction(parseSavedSearchEditor, existingFile);
 						return ({
-							resultsModel: modelService.createModel(text ?? '', modeService.create('search-result'), resource),
+							resultsModel: modelService.createModel(text ?? '', languageService.createById(SEARCH_RESULT_LANGUAGE_ID), resource),
 							configurationModel: new SearchConfigurationModel(config)
 						});
 					})();
@@ -144,14 +142,14 @@ class SearchEditorModelFactory {
 		});
 	}
 
-	private async tryFetchModelFromBackupService(resource: URI, modeService: IModeService, modelService: IModelService, workingCopyBackupService: IWorkingCopyBackupService, instantiationService: IInstantiationService): Promise<SearchEditorData | undefined> {
+	private async tryFetchModelFromBackupService(resource: URI, languageService: ILanguageService, modelService: IModelService, workingCopyBackupService: IWorkingCopyBackupService, instantiationService: IInstantiationService): Promise<SearchEditorData | undefined> {
 		const backup = await workingCopyBackupService.resolve({ resource, typeId: SearchEditorWorkingCopyTypeId });
 
 		let model = modelService.getModel(resource);
 		if (!model && backup) {
 			const factory = await createTextBufferFactoryFromStream(backup.value);
 
-			model = modelService.createModel(factory, modeService.create('search-result'), resource);
+			model = modelService.createModel(factory, languageService.createById(SEARCH_RESULT_LANGUAGE_ID), resource);
 		}
 
 		if (model) {
@@ -159,7 +157,7 @@ class SearchEditorModelFactory {
 			const { text, config } = parseSerializedSearchEditor(existingFile);
 			modelService.destroyModel(resource);
 			return ({
-				resultsModel: modelService.createModel(text ?? '', modeService.create('search-result'), resource),
+				resultsModel: modelService.createModel(text ?? '', languageService.createById(SEARCH_RESULT_LANGUAGE_ID), resource),
 				configurationModel: new SearchConfigurationModel(config)
 			});
 		}

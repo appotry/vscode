@@ -7,9 +7,9 @@ import * as monaco from 'monaco-editor-core';
 
 self.MonacoEnvironment = {
 	getWorkerUrl: function (moduleId, label) {
-		return './editor.worker.bundle.js';
+		return './editorWebWorkerMain.bundle.js';
 	}
-}
+};
 
 window.instance = monaco.editor.create(document.getElementById('container'), {
 	value: [

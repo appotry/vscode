@@ -3,19 +3,20 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from 'vs/base/common/lifecycle';
-import { ICodeEditor } from 'vs/editor/browser/editorBrowser';
-import { ConfigurationTarget } from 'vs/platform/configuration/common/configuration';
-import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-import { IWorkspaceContextService } from 'vs/platform/workspace/common/workspace';
-import { IPreferencesRenderer, UserSettingsRenderer, WorkspaceSettingsRenderer } from 'vs/workbench/contrib/preferences/browser/preferencesRenderers';
-import { IPreferencesService } from 'vs/workbench/services/preferences/common/preferences';
-import { SettingsEditorModel } from 'vs/workbench/services/preferences/common/preferencesModels';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
+import { ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IPreferencesRenderer, UserSettingsRenderer, WorkspaceSettingsRenderer } from './preferencesRenderers.js';
+import { IPreferencesService } from '../../../services/preferences/common/preferences.js';
+import { SettingsEditorModel } from '../../../services/preferences/common/preferencesModels.js';
 
 export class SettingsEditorContribution extends Disposable {
 	static readonly ID: string = 'editor.contrib.settings';
 
-	private _currentRenderer: IPreferencesRenderer | undefined;
+	private currentRenderer: IPreferencesRenderer | undefined;
+	private readonly disposables = this._register(new DisposableStore());
 
 	constructor(
 		private readonly editor: ICodeEditor,
@@ -30,24 +31,27 @@ export class SettingsEditorContribution extends Disposable {
 	}
 
 	private async _createPreferencesRenderer(): Promise<void> {
-		this._currentRenderer?.dispose();
-		this._currentRenderer = undefined;
+		this.disposables.clear();
+		this.currentRenderer = undefined;
 
 		const model = this.editor.getModel();
-		if (model) {
+		if (model && /\.(json|code-workspace)$/.test(model.uri.path)) {
+			// Fast check: the preferences renderer can only appear
+			// in settings files or workspace files
 			const settingsModel = await this.preferencesService.createPreferencesEditorModel(model.uri);
 			if (settingsModel instanceof SettingsEditorModel && this.editor.getModel()) {
+				this.disposables.add(settingsModel);
 				switch (settingsModel.configurationTarget) {
 					case ConfigurationTarget.WORKSPACE:
-						this._currentRenderer = this.instantiationService.createInstance(WorkspaceSettingsRenderer, this.editor, settingsModel);
+						this.currentRenderer = this.disposables.add(this.instantiationService.createInstance(WorkspaceSettingsRenderer, this.editor, settingsModel));
 						break;
 					default:
-						this._currentRenderer = this.instantiationService.createInstance(UserSettingsRenderer, this.editor, settingsModel);
+						this.currentRenderer = this.disposables.add(this.instantiationService.createInstance(UserSettingsRenderer, this.editor, settingsModel));
 						break;
 				}
 			}
 
-			this._currentRenderer?.render();
+			this.currentRenderer?.render();
 		}
 	}
 }

@@ -2,10 +2,12 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-import * as assert from 'assert';
-import { IndexedDB } from 'vs/base/browser/indexedDB';
+import assert from 'assert';
+import { IndexedDB } from '../../browser/indexedDB.js';
+import { flakySuite } from '../common/testUtils.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../common/utils.js';
 
-suite('IndexedDB', () => {
+flakySuite('IndexedDB', () => {
 
 	let indexedDB: IndexedDB;
 
@@ -15,7 +17,7 @@ suite('IndexedDB', () => {
 	});
 
 	teardown(() => {
-		indexedDB.close();
+		indexedDB?.close();
 	});
 
 	test('runInTransaction', async () => {
@@ -59,4 +61,5 @@ suite('IndexedDB', () => {
 		} catch (error) { }
 	});
 
+	ensureNoDisposablesAreLeakedInTestSuite();
 });

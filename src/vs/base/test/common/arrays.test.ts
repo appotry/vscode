@@ -2,32 +2,50 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-import * as assert from 'assert';
-import * as arrays from 'vs/base/common/arrays';
+import assert from 'assert';
+import * as arrays from '../../common/arrays.js';
+import * as arraysFind from '../../common/arraysFind.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from './utils.js';
+import { pick } from '../../common/arrays.js';
 
 suite('Arrays', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('removeFastWithoutKeepingOrder', () => {
+		const array = [1, 4, 5, 7, 55, 59, 60, 61, 64, 69];
+		arrays.removeFastWithoutKeepingOrder(array, 1);
+		assert.deepStrictEqual(array, [1, 69, 5, 7, 55, 59, 60, 61, 64]);
+
+		arrays.removeFastWithoutKeepingOrder(array, 0);
+		assert.deepStrictEqual(array, [64, 69, 5, 7, 55, 59, 60, 61]);
+
+		arrays.removeFastWithoutKeepingOrder(array, 7);
+		assert.deepStrictEqual(array, [64, 69, 5, 7, 55, 59, 60]);
+	});
+
 	test('findFirst', () => {
 		const array = [1, 4, 5, 7, 55, 59, 60, 61, 64, 69];
 
-		let idx = arrays.findFirstInSorted(array, e => e >= 0);
+		let idx = arraysFind.findFirstIdxMonotonousOrArrLen(array, e => e >= 0);
 		assert.strictEqual(array[idx], 1);
 
-		idx = arrays.findFirstInSorted(array, e => e > 1);
+		idx = arraysFind.findFirstIdxMonotonousOrArrLen(array, e => e > 1);
 		assert.strictEqual(array[idx], 4);
 
-		idx = arrays.findFirstInSorted(array, e => e >= 8);
+		idx = arraysFind.findFirstIdxMonotonousOrArrLen(array, e => e >= 8);
 		assert.strictEqual(array[idx], 55);
 
-		idx = arrays.findFirstInSorted(array, e => e >= 61);
+		idx = arraysFind.findFirstIdxMonotonousOrArrLen(array, e => e >= 61);
 		assert.strictEqual(array[idx], 61);
 
-		idx = arrays.findFirstInSorted(array, e => e >= 69);
+		idx = arraysFind.findFirstIdxMonotonousOrArrLen(array, e => e >= 69);
 		assert.strictEqual(array[idx], 69);
 
-		idx = arrays.findFirstInSorted(array, e => e >= 70);
+		idx = arraysFind.findFirstIdxMonotonousOrArrLen(array, e => e >= 70);
 		assert.strictEqual(idx, array.length);
 
-		idx = arrays.findFirstInSorted([], e => e >= 0);
+		idx = arraysFind.findFirstIdxMonotonousOrArrLen([], e => e >= 0);
 		assert.strictEqual(array[idx], 1);
 	});
 
@@ -35,10 +53,10 @@ suite('Arrays', () => {
 
 		function assertMedian(expexted: number, data: number[], nth: number = Math.floor(data.length / 2)) {
 			const compare = (a: number, b: number) => a - b;
-			let actual1 = arrays.quickSelect(nth, data, compare);
+			const actual1 = arrays.quickSelect(nth, data, compare);
 			assert.strictEqual(actual1, expexted);
 
-			let actual2 = data.slice().sort(compare)[nth];
+			const actual2 = data.slice().sort(compare)[nth];
 			assert.strictEqual(actual2, expexted);
 		}
 
@@ -140,7 +158,24 @@ suite('Arrays', () => {
 		assert.strictEqual(arrays.binarySearch(array, 0, compare), ~0);
 		assert.strictEqual(arrays.binarySearch(array, 6, compare), ~3);
 		assert.strictEqual(arrays.binarySearch(array, 70, compare), ~10);
+	});
 
+	test('binarySearch2', () => {
+		function compareTo(key: number) {
+			return (index: number) => {
+				return array[index] - key;
+			};
+		}
+		const array = [1, 4, 5, 7, 55, 59, 60, 61, 64, 69];
+
+		assert.strictEqual(arrays.binarySearch2(10, compareTo(1)), 0);
+		assert.strictEqual(arrays.binarySearch2(10, compareTo(5)), 2);
+
+		// insertion point
+		assert.strictEqual(arrays.binarySearch2(10, compareTo(0)), ~0);
+		assert.strictEqual(arrays.binarySearch2(10, compareTo(6)), ~3);
+		assert.strictEqual(arrays.binarySearch2(10, compareTo(70)), ~10);
+		assert.strictEqual(arrays.binarySearch2(2, compareTo(5)), ~2);
 	});
 
 	test('distinct', () => {
@@ -214,7 +249,7 @@ suite('Arrays', () => {
 	}
 
 	test('coalesce', () => {
-		let a: Array<number | null> = arrays.coalesce([null, 1, null, 2, 3]);
+		const a: Array<number | null> = arrays.coalesce([null, 1, null, 2, 3]);
 		assert.strictEqual(a.length, 3);
 		assert.strictEqual(a[0], 1);
 		assert.strictEqual(a[1], 2);
@@ -264,7 +299,7 @@ suite('Arrays', () => {
 		assert.strictEqual(a[1], 2);
 		assert.strictEqual(a[2], 3);
 
-		let b: number[] = [];
+		const b: number[] = [];
 		b[10] = 1;
 		b[20] = 2;
 		b[30] = 3;
@@ -274,7 +309,7 @@ suite('Arrays', () => {
 		assert.strictEqual(b[1], 2);
 		assert.strictEqual(b[2], 3);
 
-		let sparse: number[] = [];
+		const sparse: number[] = [];
 		sparse[0] = 1;
 		sparse[1] = 1;
 		sparse[17] = 1;
@@ -338,20 +373,89 @@ suite('Arrays', () => {
 		assert.strictEqual(array[6], 7);
 	});
 
-	test('minIndex', () => {
-		const array = ['a', 'b', 'c'];
-		assert.strictEqual(arrays.minIndex(array, value => array.indexOf(value)), 0);
-		assert.strictEqual(arrays.minIndex(array, value => -array.indexOf(value)), 2);
-		assert.strictEqual(arrays.minIndex(array, _value => 0), 0);
-		assert.strictEqual(arrays.minIndex(array, value => value === 'b' ? 0 : 5), 1);
+	test('findMaxBy', () => {
+		const array = [{ v: 3 }, { v: 5 }, { v: 2 }, { v: 2 }, { v: 2 }, { v: 5 }];
+
+		assert.strictEqual(
+			array.indexOf(arraysFind.findFirstMax(array, arrays.compareBy(v => v.v, arrays.numberComparator))!),
+			1
+		);
 	});
 
-	test('maxIndex', () => {
-		const array = ['a', 'b', 'c'];
-		assert.strictEqual(arrays.maxIndex(array, value => array.indexOf(value)), 2);
-		assert.strictEqual(arrays.maxIndex(array, value => -array.indexOf(value)), 0);
-		assert.strictEqual(arrays.maxIndex(array, _value => 0), 0);
-		assert.strictEqual(arrays.maxIndex(array, value => value === 'b' ? 5 : 0), 1);
+	test('findLastMaxBy', () => {
+		const array = [{ v: 3 }, { v: 5 }, { v: 2 }, { v: 2 }, { v: 2 }, { v: 5 }];
+
+		assert.strictEqual(
+			array.indexOf(arraysFind.findLastMax(array, arrays.compareBy(v => v.v, arrays.numberComparator))!),
+			5
+		);
+	});
+
+	test('findMinBy', () => {
+		const array = [{ v: 3 }, { v: 5 }, { v: 2 }, { v: 2 }, { v: 2 }, { v: 5 }];
+
+		assert.strictEqual(
+			array.indexOf(arraysFind.findFirstMin(array, arrays.compareBy(v => v.v, arrays.numberComparator))!),
+			2
+		);
+	});
+
+	suite('pick', () => {
+		suite('object', () => {
+			test('numbers', () => {
+				const array = [{ v: 3, foo: 'a' }, { v: 5, foo: 'b' }, { v: 2, foo: 'c' }, { v: 2, foo: 'd' }, { v: 17, bar: '1' }, { v: -100, baz: '10' }];
+
+				assert.deepStrictEqual(
+					array.map(pick('v')),
+					[3, 5, 2, 2, 17, -100],
+				);
+			});
+
+			test('strings', () => {
+				const array = [{ v: 3, foo: 'a' }, { v: 5, foo: 'b' }, { v: 2, foo: 'c' }, { v: 2, foo: 'd' }, { v: 17, bar: '1' }, { v: -100, baz: '10' }, { foo: '12' }];
+
+				assert.deepStrictEqual(
+					array.map(pick('foo')),
+					['a', 'b', 'c', 'd', undefined, undefined, '12'],
+				);
+			});
+
+			test('booleans', () => {
+				const array = [{ v: 3, foo: 'a' }, { v: 5, foo: 'b' }, { v: 2, foo: 'c' }, { v: 2, foo: 'd' }, { v: 17, bar: true }, { v: -100, bar: false }, { bar: false }];
+
+				assert.deepStrictEqual(
+					array.map(pick('bar')),
+					[undefined, undefined, undefined, undefined, true, false, false],
+				);
+			});
+
+			test('objects', () => {
+				const array = [{ v: { test: 12 } }, { v: { test: 24 } }, {}, { v: { test: 17892 } }];
+
+				assert.deepStrictEqual(
+					array.map(pick('v')),
+					[{ test: 12 }, { test: 24 }, undefined, { test: 17892 }],
+				);
+			});
+
+			test('mixed', () => {
+				const array = [{ v: { test: 104 } }, { v: 2 }, {}, { v: '24' }, { v: null }];
+
+				assert.deepStrictEqual(
+					array.map(pick('v')),
+					[{ test: 104 }, 2, undefined, '24', null],
+				);
+			});
+		});
+
+		test('string', () => {
+			const array = ['haallo', 'there', ':wave:', '!'];
+
+			assert.deepStrictEqual(
+				array.map(pick('length')),
+				[6, 5, 6, 1],
+			);
+		});
 	});
 
 	suite('ArrayQueue', () => {
@@ -363,7 +467,7 @@ suite('Arrays', () => {
 				assert.deepStrictEqual(queue1.takeWhile(x => true), [7, 6]);
 			});
 
-			test('TakeWhile 1', () => {
+			test('TakeFromEndWhile 1', () => {
 				const queue1 = new arrays.ArrayQueue([9, 8, 1, 7, 6]);
 				assert.deepStrictEqual(queue1.takeFromEndWhile(x => x > 5), [7, 6]);
 				assert.deepStrictEqual(queue1.takeFromEndWhile(x => x < 2), [1]);

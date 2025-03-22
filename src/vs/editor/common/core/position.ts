@@ -56,7 +56,7 @@ export class Position {
 	 * @param deltaColumn column delta
 	 */
 	delta(deltaLineNumber: number = 0, deltaColumn: number = 0): Position {
-		return this.with(this.lineNumber + deltaLineNumber, this.column + deltaColumn);
+		return this.with(Math.max(1, this.lineNumber + deltaLineNumber), Math.max(1, this.column + deltaColumn));
 	}
 
 	/**
@@ -129,12 +129,12 @@ export class Position {
 	 * A function that compares positions, useful for sorting
 	 */
 	public static compare(a: IPosition, b: IPosition): number {
-		let aLineNumber = a.lineNumber | 0;
-		let bLineNumber = b.lineNumber | 0;
+		const aLineNumber = a.lineNumber | 0;
+		const bLineNumber = b.lineNumber | 0;
 
 		if (aLineNumber === bLineNumber) {
-			let aColumn = a.column | 0;
-			let bColumn = b.column | 0;
+			const aColumn = a.column | 0;
+			const bColumn = b.column | 0;
 			return aColumn - bColumn;
 		}
 
@@ -173,5 +173,12 @@ export class Position {
 			&& (typeof obj.lineNumber === 'number')
 			&& (typeof obj.column === 'number')
 		);
+	}
+
+	public toJSON(): IPosition {
+		return {
+			lineNumber: this.lineNumber,
+			column: this.column
+		};
 	}
 }

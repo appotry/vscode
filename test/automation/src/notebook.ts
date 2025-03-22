@@ -3,8 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { Quality } from './application';
 import { Code } from './code';
 import { QuickAccess } from './quickaccess';
+import { QuickInput } from './quickinput';
 
 const activeRowSelector = `.notebook-editor .monaco-list-row.focused`;
 
@@ -12,18 +14,20 @@ export class Notebook {
 
 	constructor(
 		private readonly quickAccess: QuickAccess,
+		private readonly quickInput: QuickInput,
 		private readonly code: Code) {
 	}
 
 	async openNotebook() {
-		await this.quickAccess.runCommand('vscode-notebook-tests.createNewNotebook');
+		await this.quickAccess.openFileQuickAccessAndWait('notebook.ipynb', 1);
+		await this.quickInput.selectQuickInputElement(0);
+
 		await this.code.waitForElement(activeRowSelector);
 		await this.focusFirstCell();
-		await this.waitForActiveCellEditorContents('code()');
 	}
 
 	async focusNextCell() {
-		await this.code.dispatchKeybinding('down');
+		await this.code.sendKeybinding('down');
 	}
 
 	async focusFirstCell() {
@@ -31,7 +35,7 @@ export class Notebook {
 	}
 
 	async editCell() {
-		await this.code.dispatchKeybinding('enter');
+		await this.code.sendKeybinding('enter');
 	}
 
 	async stopEditingCell() {
@@ -43,10 +47,10 @@ export class Notebook {
 
 		await this.code.waitForElement(editor);
 
-		const textarea = `${editor} textarea`;
-		await this.code.waitForActiveElement(textarea);
+		const editContext = `${editor} ${this.code.quality === Quality.Stable ? 'textarea' : '.native-edit-context'}`;
+		await this.code.waitForActiveElement(editContext);
 
-		await this.code.waitForTypeInEditor(textarea, text);
+		await this.code.waitForTypeInEditor(editContext, text);
 
 		await this._waitForActiveCellEditorContents(c => c.indexOf(text) > -1);
 	}
